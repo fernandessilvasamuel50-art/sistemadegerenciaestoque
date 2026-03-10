@@ -1,4 +1,4 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Query, ParseIntPipe, DefaultValuePipe } from '@nestjs/common';
 import { DashboardService } from './dashboard.service';
 
 @Controller('dashboard')
@@ -18,5 +18,12 @@ export class DashboardController {
   @Get('top-products')
   getTopProducts() {
     return this.dashboardService.getTopProducts();
+  }
+
+  @Get('sales-chart')
+  getSalesChart(
+    @Query('days', new DefaultValuePipe(7), ParseIntPipe) days: number,
+  ) {
+    return this.dashboardService.getSalesChart(days);
   }
 }

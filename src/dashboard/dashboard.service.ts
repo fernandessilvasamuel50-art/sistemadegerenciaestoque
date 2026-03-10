@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Between, Repository } from 'typeorm';
 
 import { Sale } from '../sales/entities/sale.entity';
 import { Product } from '../products/entities/product.entity';
@@ -24,17 +24,28 @@ export class DashboardService {
   ) {}
 
   async getDashboard() {
-    const hoje = new Date();
-    hoje.setHours(0, 0, 0, 0);
+    const hojeInicio = new Date();
+    hojeInicio.setHours(0, 0, 0, 0);
 
-    const vendasHoje = await this.saleRepository
-      .createQueryBuilder('sale')
-      .where('sale.created_at >= :hoje', { hoje })
-      .getMany();
+    const hojeFim = new Date();
+    hojeFim.setHours(23, 59, 59, 999);
+
+    const vendasHoje = await this.saleRepository.find({
+      where: {
+        created_at: Between(hojeInicio, hojeFim),
+      },
+      relations: ['items', 'items.product'],
+      order: { created_at: 'DESC' },
+    });
 
     const faturamentoHoje = vendasHoje.reduce((total, sale) => {
       return total + Number(sale.total);
     }, 0);
+
+    const quantidadeVendasHoje = vendasHoje.length;
+
+    const ticketMedioHoje =
+      quantidadeVendasHoje > 0 ? faturamentoHoje / quantidadeVendasHoje : 0;
 
     const totalProdutos = await this.productRepository.count();
     const produtosEstoqueBaixo = await this.getLowStock();
@@ -42,8 +53,9 @@ export class DashboardService {
     const produtosSobDemanda = await this.recipeRepository.count();
 
     return {
-      faturamento_hoje: faturamentoHoje,
-      vendas_hoje: vendasHoje.length,
+      faturamento_hoje: Number(faturamentoHoje.toFixed(2)),
+      vendas_hoje: quantidadeVendasHoje,
+      ticket_medio_hoje: Number(ticketMedioHoje.toFixed(2)),
       produtos_cadastrados: totalProdutos,
       produtos_estoque_baixo: produtosEstoqueBaixo.length,
       produtos_sob_demanda: produtosSobDemanda,
@@ -70,11 +82,11 @@ export class DashboardService {
       nome: string;
       saldo: number;
       estoque_minimo: number;
+      percentual_risco: number;
     }> = [];
 
     for (const product of produtos) {
-      // Se o produto tem receita, ele é sob demanda.
-      // Então não deve aparecer como estoque baixo do produto final.
+      // Produto final com receita é sob demanda
       if (productIdsWithRecipe.has(product.id)) {
         continue;
       }
@@ -93,19 +105,33 @@ export class DashboardService {
         }
       }
 
-      // Aqui usamos < em vez de <=
-      // para não marcar como "baixo" quando saldo e mínimo forem ambos 0.
       if (saldo < product.estoque_minimo) {
+        let percentualRisco = 100;
+
+        if (product.estoque_minimo > 0) {
+          percentualRisco = Number(
+            (((product.estoque_minimo - saldo) / product.estoque_minimo) * 100).toFixed(2),
+          );
+        }
+
         lowStockProducts.push({
           id: product.id,
           nome: product.nome,
-          saldo,
+          saldo: Number(saldo.toFixed(3)),
           estoque_minimo: product.estoque_minimo,
+          percentual_risco: percentualRisco < 0 ? 0 : percentualRisco,
         });
       }
     }
 
-    return lowStockProducts;
+    return lowStockProducts.sort((a, b) => {
+      // mais crítico primeiro
+      if (a.saldo !== b.saldo) {
+        return a.saldo - b.saldo;
+      }
+
+      return b.estoque_minimo - a.estoque_minimo;
+    });
   }
 
   async getTopProducts() {
@@ -136,6 +162,42 @@ export class DashboardService {
 
     return Object.values(ranking)
       .sort((a, b) => b.quantidade_vendida - a.quantidade_vendida)
-      .slice(0, 5);
+      .slice(0, 10);
+  }
+
+  async getSalesChart(days = 7) {
+    const hoje = new Date();
+    hoje.setHours(23, 59, 59, 999);
+
+    const inicioPeriodo = new Date();
+    inicioPeriodo.setDate(hoje.getDate() - (days - 1));
+    inicioPeriodo.setHours(0, 0, 0, 0);
+
+    const sales = await this.saleRepository.find({
+      where: {
+        created_at: Between(inicioPeriodo, hoje),
+      },
+      order: { created_at: 'ASC' },
+    });
+
+    const mapa: Record<string, number> = {};
+
+    for (let i = 0; i < days; i++) {
+      const data = new Date(inicioPeriodo);
+      data.setDate(inicioPeriodo.getDate() + i);
+
+      const chave = data.toISOString().split('T')[0];
+      mapa[chave] = 0;
+    }
+
+    for (const sale of sales) {
+      const chave = new Date(sale.created_at).toISOString().split('T')[0];
+      mapa[chave] = Number((mapa[chave] + Number(sale.total)).toFixed(2));
+    }
+
+    return Object.entries(mapa).map(([dia, total]) => ({
+      dia,
+      total,
+    }));
   }
 }
